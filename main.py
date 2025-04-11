@@ -2,13 +2,18 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import logging
+import plotly.graph_objects as go
 from functools import lru_cache
+from datetime import datetime, timedelta
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
-# Predefined list of popular Indian stocks (you can expand this list)
-indian_stocks = [
+# Cache the stock list for better performance
+@st.cache_data
+def get_stock_list():
+    """Return cached list of Indian stocks"""
+    return [
     "ABB.NS"
     ,"ACC.NS"
     ,"APLAPOLLO.NS"
@@ -254,12 +259,62 @@ def fetch_data(pair, period="1d", interval="5m"):
 
 def calculate_atr(data, window=14):
     """Calculate the Average True Range (ATR) for volatility measurement"""
-    data['High-Low'] = data['High'] - data['Low']
-    data['High-ClosePrev'] = abs(data['High'] - data['Close'].shift(1))
-    data['Low-ClosePrev'] = abs(data['Low'] - data['Close'].shift(1))
-    tr = data[['High-Low', 'High-ClosePrev', 'Low-ClosePrev']].max(axis=1)
+    high_low = data['High'] - data['Low']
+    high_close = abs(data['High'] - data['Close'].shift(1))
+    low_close = abs(data['Low'] - data['Close'].shift(1))
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     data['ATR'] = tr.rolling(window).mean()
     return data
+
+def plot_stock_data(data, signals=None):
+    """Create interactive plot with Plotly"""
+    fig = go.Figure()
+
+    # Candlestick chart
+    fig.add_trace(go.Candlestick(
+        x=data.index,
+        open=data['Open'],
+        high=data['High'],
+        low=data['Low'],
+        close=data['Close'],
+        name='Price'
+    ))
+
+    # Add ATR
+    fig.add_trace(go.Scatter(
+        x=data.index,
+        y=data['ATR'],
+        name='ATR',
+        line=dict(color='purple', width=2),
+        yaxis='y2'
+    ))
+
+    # Add signals if provided
+    if signals:
+        for signal in signals:
+            color = 'green' if signal['type'] == 'BUY' else 'red'
+            # Use datetime object directly
+            fig.add_vline(
+                x=signal['date'].timestamp() * 1000,  # Convert to milliseconds for Plotly
+                line_width=1,
+                line_dash="dash",
+                line_color=color,
+                annotation_text=signal['type'],
+                annotation_position="top right"
+            )
+
+    fig.update_layout(
+        title='Stock Price with ATR',
+        yaxis_title='Price',
+        yaxis2=dict(
+            title='ATR',
+            overlaying='y',
+            side='right'
+        ),
+        xaxis_rangeslider_visible=False,
+        height=600
+    )
+    return fig
 
 
 def price_action_strategy(data, pair, atr_multiplier=1.5):
@@ -289,7 +344,7 @@ def price_action_strategy(data, pair, atr_multiplier=1.5):
                 stop_loss = entry_price - atr * atr_multiplier
                 take_profit = entry_price + atr * atr_multiplier * 2
                 entries.append({
-                    'pair': pair, 'date': current.name.strftime('%Y-%m-%d %H:%M:%S'),
+                    'pair': pair, 'date': current.name,
                     'type': 'BUY', 'entry': entry_price, 'stop': stop_loss, 'tp': take_profit
                 })
             elif current['Close'].item() < previous['Low'].item() and current['Open'].item() < previous['Low'].item():
@@ -297,7 +352,7 @@ def price_action_strategy(data, pair, atr_multiplier=1.5):
                 stop_loss = entry_price + atr * atr_multiplier
                 take_profit = entry_price - atr * atr_multiplier * 2
                 entries.append({
-                    'pair': pair, 'date': current.name.strftime('%Y-%m-%d %H:%M:%S'),
+                    'pair': pair, 'date': current.name,
                     'type': 'SELL', 'entry': entry_price, 'stop': stop_loss, 'tp': take_profit
                 })
         else:
@@ -307,21 +362,65 @@ def price_action_strategy(data, pair, atr_multiplier=1.5):
 
 
 # Streamlit UI
-st.title("Indian Stock Trading Signals")
+st.title("📈 Indian Stock Trading Signals")
 
-# Dropdown for selecting stocks
-currency_pair = st.selectbox("Select Stock", indian_stocks)
+# Sidebar controls
+with st.sidebar:
+    st.header("Settings")
+    currency_pair = st.selectbox("Select Stock", get_stock_list())
+    days_back = st.slider("Days of History", 1, 365, 30)
+    atr_multiplier = st.slider("ATR Multiplier", 0.5, 3.0, 1.5, 0.1)
 
-if st.button("Get Signals"):
-    data = fetch_data(currency_pair)
-    if data is None:
-        st.error(f"Error fetching data for {currency_pair}.")
-    else:
-        data = calculate_atr(data)
-        entries = price_action_strategy(data.dropna(), currency_pair)
-        if entries:
-            for signal in entries:
-                st.write(
-                    f"{signal['date']}: {signal['type']} {signal['pair']} at {signal['entry']} (Stop: {signal['stop']}, TP: {signal['tp']})")
+# Main content
+if st.button("Analyze Stock"):
+    with st.spinner("Fetching data and analyzing..."):
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days_back)
+        
+        data = fetch_data(
+            currency_pair,
+            period=f"{days_back}d",
+            interval="1d"
+        )
+        
+        if data is None:
+            st.error(f"Error fetching data for {currency_pair}.")
         else:
-            st.write("No trade signals generated.")
+            data = calculate_atr(data)
+            entries = price_action_strategy(
+                data.dropna(),
+                currency_pair,
+                atr_multiplier=atr_multiplier
+            )
+            
+            # Show summary stats
+            st.subheader(f"📊 {currency_pair} Summary")
+            col1, col2, col3 = st.columns(3)
+            current_price = float(data['Close'].iloc[-1].item())
+            atr_value = float(data['ATR'].iloc[-1])
+            volatility = (atr_value/current_price)*100
+            
+            col1.metric("Current Price", f"₹{current_price:.2f}")
+            col2.metric("ATR", f"₹{atr_value:.2f}")
+            col3.metric("Volatility", f"{volatility:.2f}%")
+            
+            # Show interactive chart
+            st.plotly_chart(
+                plot_stock_data(data, entries),
+                use_container_width=True
+            )
+            
+            # Show signals in a table
+            if entries:
+                st.subheader("🚦 Trading Signals")
+                signals_df = pd.DataFrame(entries)
+                st.dataframe(
+                    signals_df.style.format({
+                        'entry': '{:.2f}',
+                        'stop': '{:.2f}',
+                        'tp': '{:.2f}'
+                    }),
+                    use_container_width=True
+                )
+            else:
+                st.info("No trade signals generated for this period.")
