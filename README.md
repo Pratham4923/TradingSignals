@@ -26,9 +26,13 @@ Clone the repository
 
 bash
 Copy
+
 Edit
+
 git clone https://github.com/Pratham4923/TradingSignals.git
+
 cd TradingSignals
+
 Install the dependencies
 
 bash
