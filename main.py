@@ -1,4 +1,5 @@
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 import pandas as pd
 import logging
@@ -370,10 +371,15 @@ with st.sidebar:
     currency_pair = st.selectbox("Select Stock", get_stock_list())
     days_back = st.slider("Days of History", 1, 365, 30)
     atr_multiplier = st.slider("ATR Multiplier", 0.5, 3.0, 1.5, 0.1)
+    
+    # Auto-refresh controls
+    auto_refresh = st.checkbox("Enable Auto Refresh", value=False)
+    if auto_refresh:
+        refresh_interval = st.slider("Refresh Interval (seconds)", 10, 300, 60, 10)
+        st_autorefresh(interval=refresh_interval * 1000, key="data_refresh")
 
 # Main content
-if st.button("Analyze Stock"):
-    with st.spinner("Fetching data and analyzing..."):
+with st.spinner("Fetching data and analyzing..."):
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days_back)
         
